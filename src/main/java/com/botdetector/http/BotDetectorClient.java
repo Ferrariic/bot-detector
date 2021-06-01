@@ -26,12 +26,15 @@
 package com.botdetector.http;
 
 import com.botdetector.BotDetectorPlugin;
+import com.botdetector.model.CaseInsensitiveString;
+import com.botdetector.BotDetectorPlugin;
 import com.botdetector.model.FeedbackValue;
 import com.botdetector.model.PlayerSighting;
 import com.botdetector.model.PlayerStats;
 import com.botdetector.model.PlayerStatsType;
 import com.botdetector.model.Prediction;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonDeserializationContext;
@@ -60,6 +63,7 @@ import lombok.Getter;
 import lombok.Setter;
 import lombok.Value;
 import lombok.extern.slf4j.Slf4j;
+import net.runelite.api.clan.ClanRank;
 import net.runelite.http.api.RuneLiteAPI;
 import okhttp3.Call;
 import okhttp3.Callback;
@@ -90,7 +94,8 @@ public class BotDetectorClient
 		PLAYER_STATS("stats/contributions/"),
 		PREDICTION("site/prediction/"),
 		FEEDBACK("plugin/predictionfeedback/"),
-		VERIFY_DISCORD("site/discord_user/")
+		VERIFY_DISCORD("site/discord_user/"),
+		CLAN_RANK_UPDATES("plugin/clan/rank-update/")
 		;
 
 		final String path;
@@ -420,6 +425,80 @@ public class BotDetectorClient
 	}
 
 	/**
+	 * Tokenized API route to request a collection of clan ranks to be changed for the given players.
+	 * @param token The auth token to use.
+	 * @param currentRanks A map of player names and their current clan rank.
+	 * @return A map of player names and the clan rank they should be, not necessarily including names with unchanged ranks.
+	 */
+	public CompletableFuture<Map<CaseInsensitiveString, ClanRank>> requestClanRankUpdates(
+		String token, Map<CaseInsensitiveString, ClanRank> currentRanks)
+	{
+		Gson gson = gsonBuilder.create();
+
+		Collection<MemberClanRank> memRanks = currentRanks.entrySet().stream()
+			.map(cr -> new MemberClanRank(cr.getKey().getStr(), cr.getValue()))
+			.collect(Collectors.toList());
+
+		Request request = new Request.Builder()
+			.url(getUrl(ApiPath.CLAN_RANK_UPDATES).newBuilder()
+				.addPathSegment(token)
+				.build())
+			.post(RequestBody.create(JSON, gson.toJson(memRanks)))
+			.build();
+
+		CompletableFuture<Map<CaseInsensitiveString, ClanRank>> future = new CompletableFuture<>();
+		okHttpClient.newCall(request).enqueue(new Callback()
+		{
+			@Override
+			public void onFailure(Call call, IOException e)
+			{
+				log.warn("Error getting clan rank updates", e);
+				future.completeExceptionally(e);
+			}
+
+			@Override
+			public void onResponse(Call call, Response response)
+			{
+				try
+				{
+					if (response.code() == 401)
+					{
+						throw new UnauthorizedTokenException("Invalid or unauthorized token for operation");
+					}
+
+					Collection<MemberClanRank> returned = processResponse(gson, response,
+						new TypeToken<Collection<MemberClanRank>>()
+						{
+						}.getType());
+
+					if (returned == null)
+					{
+						future.complete(null);
+					}
+					else
+					{
+						future.complete(returned.stream().collect(
+							ImmutableMap.toImmutableMap(
+								m -> BotDetectorPlugin.normalizeAndWrapPlayerName(m.getMemberName()),
+								MemberClanRank::getMemberRank)));
+					}
+				}
+				catch (UnauthorizedTokenException | IOException e)
+				{
+					log.warn("Error getting clan rank updates", e);
+					future.completeExceptionally(e);
+				}
+				finally
+				{
+					response.close();
+				}
+			}
+		});
+
+		return future;
+	}
+
+	/**
 	 * Processes the body of the given response and parses out the contained JSON object.
 	 * @param gson The {@link Gson} instance to use for parsing the JSON object in the {@code response}.
 	 * @param response The response containing the object to parse in {@link Response#body()}.
@@ -511,6 +590,15 @@ public class BotDetectorClient
 		long targetId;
 		@SerializedName("feedback_text")
 		String feedbackText;
+	}
+
+	@Value
+	private static class MemberClanRank
+	{
+		@SerializedName("player")
+		String memberName;
+		@SerializedName("rank")
+		ClanRank memberRank;
 	}
 
 	/**
