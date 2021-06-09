@@ -101,10 +101,20 @@ public class BotDetectorClient
 		final String path;
 	}
 
+	/**
+	 * {@link RuneLiteAPI#CLIENT} with a connect/read timeout of 30 seconds each and no pinging.
+	 */
 	public static OkHttpClient okHttpClient = RuneLiteAPI.CLIENT.newBuilder()
 		.pingInterval(0, TimeUnit.SECONDS)
 		.connectTimeout(30, TimeUnit.SECONDS)
 		.readTimeout(30, TimeUnit.SECONDS)
+		.build();
+
+	/**
+	 * Same as {@link #okHttpClient}, but with a read timeout of 60 seconds.
+	 */
+	public static OkHttpClient longTimeoutHttpClient = okHttpClient.newBuilder()
+		.readTimeout(60, TimeUnit.SECONDS)
 		.build();
 
 	@Inject
@@ -447,7 +457,7 @@ public class BotDetectorClient
 			.build();
 
 		CompletableFuture<Map<CaseInsensitiveString, ClanRank>> future = new CompletableFuture<>();
-		okHttpClient.newCall(request).enqueue(new Callback()
+		longTimeoutHttpClient.newCall(request).enqueue(new Callback()
 		{
 			@Override
 			public void onFailure(Call call, IOException e)
